@@ -9,6 +9,9 @@
 #include "lexbor/dom/interfaces/document.h"
 #include "lexbor/dom/interfaces/element.h"
 
+#define LEXBOR_STR_RES_MAP_LOWERCASE
+#include "lexbor/core/str_res.h"
+
 
 LXB_API lxb_dom_attr_data_t *
 lxb_dom_attr_local_name_append(lexbor_hash_t *hash,
@@ -426,6 +429,7 @@ static inline bool
 lxb_dom_attr_id_eq_lower(lxb_dom_attr_id_t attr_id,
                          const lxb_char_t *name, size_t length)
 {
+    const lxb_char_t *str;
     const lxb_dom_attr_data_t *data;
 
     if (attr_id >= LXB_DOM_ATTR__LAST_ENTRY) {
@@ -439,9 +443,19 @@ lxb_dom_attr_id_eq_lower(lxb_dom_attr_id_t attr_id,
         data = &lxb_dom_attr_res_data_default[attr_id];
     }
 
-    return data->entry.length == length
-        && lexbor_str_data_nlocmp_right(lexbor_hash_entry_str(&data->entry),
-                                        name, length);
+    if (data->entry.length != length) {
+        return false;
+    }
+
+    str = lexbor_hash_entry_str(&data->entry);
+
+    for (size_t i = 0; i < length; i++) {
+        if (str[i] != lexbor_str_res_map_lowercase[name[i]]) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /*
