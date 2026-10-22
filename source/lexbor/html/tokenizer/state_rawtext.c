@@ -6,6 +6,7 @@
 
 #include "lexbor/html/tokenizer/state_rawtext.h"
 #include "lexbor/html/tokenizer/state.h"
+#include "lexbor/core/swar.h"
 
 #ifndef LEXBOR_DISABLE_INTERNAL_EXTERN
     LXB_EXTERN const lxb_char_t lexbor_str_res_ansi_replacement_character[4];
@@ -66,6 +67,11 @@ lxb_html_tokenizer_state_rawtext(lxb_html_tokenizer_t *tkz,
     lxb_html_tokenizer_state_begin_set(tkz, data);
 
     while (data != end) {
+        data = lexbor_swar_seek3(data, end, 0x3C, 0x0D, 0x00);
+        if (data == end) {
+            break;
+        }
+
         switch (*data) {
             /* U+003C LESS-THAN SIGN (<) */
             case 0x3C:

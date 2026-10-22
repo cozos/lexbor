@@ -254,9 +254,13 @@ lxb_html_tokenizer_state_data(lxb_html_tokenizer_t *tkz,
 {
     lxb_html_tokenizer_state_begin_set(tkz, data);
 
-    data = lexbor_swar_seek4(data, end, 0x3C, 0x26, 0x0D, 0x00);
 
     while (data != end) {
+        data = lexbor_swar_seek4(data, end, 0x3C, 0x26, 0x0D, 0x00);
+        if (data == end) {
+            break;
+        }
+
         switch (*data) {
             /* U+003C LESS-THAN SIGN (<) */
             case 0x3C:
@@ -933,9 +937,13 @@ lxb_html_tokenizer_state_attribute_value_double_quoted(lxb_html_tokenizer_t *tkz
 
     lxb_html_tokenizer_state_begin_set(tkz, data);
 
-    data = lexbor_swar_seek4(data, end, 0x22, 0x26, 0x0D, 0x00);
 
     while (data != end) {
+        data = lexbor_swar_seek4(data, end, 0x22, 0x26, 0x0D, 0x00);
+        if (data == end) {
+            break;
+        }
+
         switch (*data) {
             /* U+0022 QUOTATION MARK (") */
             case 0x22:
@@ -1030,6 +1038,11 @@ lxb_html_tokenizer_state_attribute_value_single_quoted(lxb_html_tokenizer_t *tkz
     lxb_html_tokenizer_state_begin_set(tkz, data);
 
     while (data != end) {
+        data = lexbor_swar_seek4(data, end, 0x27, 0x26, 0x0D, 0x00);
+        if (data == end) {
+            break;
+        }
+
         switch (*data) {
             /* U+0027 APOSTROPHE (') */
             case 0x27:

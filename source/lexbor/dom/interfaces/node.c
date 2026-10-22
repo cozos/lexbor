@@ -113,6 +113,7 @@ lxb_dom_node_interface_create(lxb_dom_document_t *document)
 
     element->owner_document = lxb_dom_document_owner(document);
     element->type = LXB_DOM_NODE_TYPE_UNDEF;
+    element->ref_count = 1;
 
     return element;
 }
@@ -139,6 +140,11 @@ lxb_dom_node_t *
 lxb_dom_node_interface_destroy(lxb_dom_node_t *node)
 {
     lxb_dom_document_t *doc = node->owner_document;
+
+    --node->ref_count;
+    if (node->ref_count > 0) {
+        return node;
+    }
 
     return lexbor_mraw_free(doc->mraw, node);
 }
