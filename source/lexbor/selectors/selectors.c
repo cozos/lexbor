@@ -327,6 +327,66 @@ lxb_selectors_list_is_simple(const lxb_css_selector_list_t *list)
 }
 
 /*
+ * Bit i is set if the i-th entry is a class selector matching the element.
+ * Equivalent to lxb_selectors_match_class() for each class selector with a
+ * non-empty name, but the class attribute is split into tokens only once.
+ */
+static uint64_t
+lxb_selectors_class_mask(const lxb_dom_node_t *node,
+                         const lxb_selectors_entry_t *first)
+{
+    size_t idx, length;
+    uint64_t mask;
+    const lxb_char_t *data, *end, *pos;
+    const lexbor_str_t *value;
+    const lxb_selectors_entry_t *entry;
+    const lxb_dom_element_t *element;
+
+    element = lxb_dom_interface_element(node);
+
+    if (element->attr_class == NULL || element->attr_class->value == NULL) {
+        return 0;
+    }
+
+    value = element->attr_class->value;
+    data = value->data;
+    end = data + value->length;
+    mask = 0;
+
+    while (data < end) {
+        while (data < end && lexbor_utils_whitespace(*data, ==, ||)) {
+            data++;
+        }
+
+        pos = data;
+
+        while (data < end && !(lexbor_utils_whitespace(*data, ==, ||))) {
+            data++;
+        }
+
+        length = data - pos;
+
+        if (length == 0) {
+            break;
+        }
+
+        for (entry = first, idx = 0; entry != NULL;
+             entry = entry->following, idx++)
+        {
+            if (entry->selector->type == LXB_CSS_SELECTOR_TYPE_CLASS
+                && entry->selector->name.length == length
+                && lexbor_str_data_ncasecmp(pos, entry->selector->name.data,
+                                            length))
+            {
+                mask |= (uint64_t) 1 << idx;
+            }
+        }
+    }
+
+    return mask;
+}
+
+/*
  * Same traversal and callback order as lxb_selectors_state_tree() for a
  * simple selector list, without the state machine: each element is matched
  * against each selector of the list in order.
@@ -336,12 +396,18 @@ lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
                           const lxb_css_selector_list_t *list,
                           lxb_selectors_cb_f cb, void *ctx)
 {
+    bool class_mask;
+    size_t idx, count, classes;
+    uint64_t matched;
     lxb_status_t status;
     lxb_dom_node_t *node;
     lxb_selectors_entry_t *first, *entry, **tail;
 
     first = NULL;
     tail = &first;
+    count = 0;
+    classes = 0;
+    class_mask = true;
 
     for (; list != NULL; list = list->next) {
         entry = lexbor_dobject_calloc(selectors->objs);
@@ -353,9 +419,23 @@ lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
         entry->combinator = LXB_CSS_SELECTOR_COMBINATOR_CLOSE;
         entry->selector = list->last;
 
+        if (entry->selector->type == LXB_CSS_SELECTOR_TYPE_CLASS) {
+            classes += 1;
+
+            if (entry->selector->name.length == 0) {
+                class_mask = false;
+            }
+        }
+
+        count += 1;
+
         *tail = entry;
         tail = &entry->following;
     }
+
+    /* Tokenize class attributes once when several class selectors share it. */
+    class_mask = class_mask && classes >= 2 && count <= 64;
+    matched = 0;
 
     selectors->status = LXB_STATUS_OK;
 
@@ -379,8 +459,23 @@ lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
             goto next;
         }
 
-        for (entry = first; entry != NULL; entry = entry->following) {
-            if (!lxb_selectors_match(selectors, entry, entry->selector, node)) {
+        if (class_mask) {
+            matched = lxb_selectors_class_mask(node, first);
+        }
+
+        for (entry = first, idx = 0; entry != NULL;
+             entry = entry->following, idx++)
+        {
+            if (class_mask
+                && entry->selector->type == LXB_CSS_SELECTOR_TYPE_CLASS)
+            {
+                if ((matched & ((uint64_t) 1 << idx)) == 0) {
+                    continue;
+                }
+            }
+            else if (!lxb_selectors_match(selectors, entry,
+                                          entry->selector, node))
+            {
                 continue;
             }
 
