@@ -14,6 +14,11 @@ extern "C" {
 
 #include "lexbor/core/base.h"
 
+#if defined(__SSE2__) && (defined(__GNUC__) || defined(__clang__))
+#include <emmintrin.h>
+#define LEXBOR_SWAR_SSE2 1
+#endif
+
 
 /* 
  * Based on techniques from https://graphics.stanford.edu/~seander/bithacks.html
@@ -34,6 +39,29 @@ lexbor_swar_seek4(const lxb_char_t *data, const lxb_char_t *end,
                   lxb_char_t c1, lxb_char_t c2, lxb_char_t c3, lxb_char_t c4)
 {
     size_t bytes, matches, t1, t2, t3, t4;
+
+#ifdef LEXBOR_SWAR_SSE2
+    int mask;
+    __m128i block;
+    const __m128i v1 = _mm_set1_epi8((char) c1);
+    const __m128i v2 = _mm_set1_epi8((char) c2);
+    const __m128i v3 = _mm_set1_epi8((char) c3);
+    const __m128i v4 = _mm_set1_epi8((char) c4);
+
+    while (data + 16 <= end) {
+        block = _mm_loadu_si128((const __m128i *) data);
+        mask = _mm_movemask_epi8(
+            _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(block, v1),
+                                      _mm_cmpeq_epi8(block, v2)),
+                         _mm_or_si128(_mm_cmpeq_epi8(block, v3),
+                                      _mm_cmpeq_epi8(block, v4))));
+        if (mask != 0) {
+            return data + __builtin_ctz((unsigned int) mask);
+        }
+
+        data += 16;
+    }
+#endif
 
     if (LEXBOR_SWAR_IS_LITTLE_ENDIAN) {
         while (data + sizeof(size_t) <= end) {
@@ -64,6 +92,27 @@ lexbor_swar_seek3(const lxb_char_t *data, const lxb_char_t *end,
                   lxb_char_t c1, lxb_char_t c2, lxb_char_t c3)
 {
     size_t bytes, matches, t1, t2, t3;
+
+#ifdef LEXBOR_SWAR_SSE2
+    int mask;
+    __m128i block;
+    const __m128i v1 = _mm_set1_epi8((char) c1);
+    const __m128i v2 = _mm_set1_epi8((char) c2);
+    const __m128i v3 = _mm_set1_epi8((char) c3);
+
+    while (data + 16 <= end) {
+        block = _mm_loadu_si128((const __m128i *) data);
+        mask = _mm_movemask_epi8(
+            _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(block, v1),
+                                      _mm_cmpeq_epi8(block, v2)),
+                         _mm_cmpeq_epi8(block, v3)));
+        if (mask != 0) {
+            return data + __builtin_ctz((unsigned int) mask);
+        }
+
+        data += 16;
+    }
+#endif
 
     if (LEXBOR_SWAR_IS_LITTLE_ENDIAN) {
         while (data + sizeof(size_t) <= end) {
