@@ -90,6 +90,10 @@ lxb_dom_attr_data_undef(void);
 LXB_API const lxb_dom_attr_data_t *
 lxb_dom_attr_data_by_id(lexbor_hash_t *hash, lxb_dom_attr_id_t attr_id);
 
+lxb_dom_attr_t *
+lxb_dom_attr_find_by_local_name(lxb_dom_attr_t *attr,
+                                const lxb_char_t *name, size_t length);
+
 LXB_API const lxb_dom_attr_data_t *
 lxb_dom_attr_data_by_local_name(lexbor_hash_t *hash,
                                 const lxb_char_t *name, size_t length);

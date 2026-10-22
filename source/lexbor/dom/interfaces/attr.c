@@ -422,6 +422,80 @@ lxb_dom_attr_data_by_id(lexbor_hash_t *hash, lxb_dom_attr_id_t attr_id)
     return &lxb_dom_attr_res_data_default[attr_id];
 }
 
+static inline bool
+lxb_dom_attr_id_eq_lower(lxb_dom_attr_id_t attr_id,
+                         const lxb_char_t *name, size_t length)
+{
+    const lxb_dom_attr_data_t *data;
+
+    if (attr_id >= LXB_DOM_ATTR__LAST_ENTRY) {
+        if (attr_id == LXB_DOM_ATTR__LAST_ENTRY) {
+            return false;
+        }
+
+        data = (const lxb_dom_attr_data_t *) attr_id;
+    }
+    else {
+        data = &lxb_dom_attr_res_data_default[attr_id];
+    }
+
+    return data->entry.length == length
+        && lexbor_str_data_nlocmp_right(lexbor_hash_entry_str(&data->entry),
+                                        name, length);
+}
+
+/*
+ * Equivalent to looking up the attribute data with
+ * lxb_dom_attr_data_by_local_name() and comparing ids, without hashing the
+ * name. Attribute names are interned, so an id matches the looked-up data
+ * exactly when its string equals the lowercased name, unless the id is a
+ * dynamic entry and the name also has a static entry (the static one wins).
+ */
+lxb_dom_attr_t *
+lxb_dom_attr_find_by_local_name(lxb_dom_attr_t *attr,
+                                const lxb_char_t *name, size_t length)
+{
+    int is_static = -1;
+
+    if (name == NULL || length == 0) {
+        return NULL;
+    }
+
+    for (; attr != NULL; attr = attr->next) {
+        if (lxb_dom_attr_id_eq_lower(attr->node.local_name, name, length)) {
+            if (attr->node.local_name < LXB_DOM_ATTR__LAST_ENTRY) {
+                return attr;
+            }
+
+            if (is_static < 0) {
+                is_static = lexbor_shs_entry_get_lower_static(
+                                lxb_dom_attr_res_shs_data, name, length) != NULL;
+            }
+
+            if (!is_static) {
+                return attr;
+            }
+        }
+
+        if (lxb_dom_attr_id_eq_lower(attr->qualified_name, name, length)) {
+            if (attr->qualified_name < LXB_DOM_ATTR__LAST_ENTRY) {
+                return attr;
+            }
+
+            if (is_static < 0) {
+                is_static = lexbor_shs_entry_get_lower_static(
+                                lxb_dom_attr_res_shs_data, name, length) != NULL;
+            }
+
+            if (!is_static) {
+                return attr;
+            }
+        }
+    }
+
+    return NULL;
+}
+
 const lxb_dom_attr_data_t *
 lxb_dom_attr_data_by_local_name(lexbor_hash_t *hash,
                                 const lxb_char_t *name, size_t length)

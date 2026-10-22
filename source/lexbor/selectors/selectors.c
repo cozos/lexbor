@@ -13,6 +13,14 @@ static lxb_status_t
 lxb_selectors_state_tree(lxb_selectors_t *selectors, lxb_dom_node_t *root,
                          const lxb_css_selector_list_t *list);
 
+static bool
+lxb_selectors_list_is_simple(const lxb_css_selector_list_t *list);
+
+static lxb_status_t
+lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
+                          const lxb_css_selector_list_t *list,
+                          lxb_selectors_cb_f cb, void *ctx);
+
 static lxb_status_t
 lxb_selectors_state_run(lxb_selectors_t *selectors, lxb_dom_node_t *node,
                         const lxb_css_selector_list_t *list);
@@ -263,6 +271,10 @@ lxb_selectors_find(lxb_selectors_t *selectors, lxb_dom_node_t *root,
     lxb_selectors_entry_t *entry;
     lxb_selectors_nested_t nested;
 
+    if (lxb_selectors_list_is_simple(list)) {
+        return lxb_selectors_find_simple(selectors, root, list, cb, ctx);
+    }
+
     entry = lexbor_dobject_calloc(selectors->objs);
     if (entry == NULL) {
         return LXB_STATUS_ERROR_MEMORY_ALLOCATION;
@@ -280,6 +292,141 @@ lxb_selectors_find(lxb_selectors_t *selectors, lxb_dom_node_t *root,
     selectors->status = LXB_STATUS_OK;
 
     return lxb_selectors_state_tree(selectors, root, list);
+}
+
+/*
+ * A selector list in which every selector is a single simple selector
+ * (type, universal, class, id or attribute), e.g. "script, style, .foo".
+ */
+static bool
+lxb_selectors_list_is_simple(const lxb_css_selector_list_t *list)
+{
+    const lxb_css_selector_t *selector;
+
+    for (; list != NULL; list = list->next) {
+        selector = list->last;
+
+        if (selector == NULL || selector->prev != NULL) {
+            return false;
+        }
+
+        switch (selector->type) {
+            case LXB_CSS_SELECTOR_TYPE_ANY:
+            case LXB_CSS_SELECTOR_TYPE_ELEMENT:
+            case LXB_CSS_SELECTOR_TYPE_ID:
+            case LXB_CSS_SELECTOR_TYPE_CLASS:
+            case LXB_CSS_SELECTOR_TYPE_ATTRIBUTE:
+                break;
+
+            default:
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/*
+ * Same traversal and callback order as lxb_selectors_state_tree() for a
+ * simple selector list, without the state machine: each element is matched
+ * against each selector of the list in order.
+ */
+static lxb_status_t
+lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
+                          const lxb_css_selector_list_t *list,
+                          lxb_selectors_cb_f cb, void *ctx)
+{
+    lxb_status_t status;
+    lxb_dom_node_t *node;
+    lxb_selectors_entry_t *first, *entry, **tail;
+
+    first = NULL;
+    tail = &first;
+
+    for (; list != NULL; list = list->next) {
+        entry = lexbor_dobject_calloc(selectors->objs);
+        if (entry == NULL) {
+            lxb_selectors_clean(selectors);
+            return LXB_STATUS_ERROR_MEMORY_ALLOCATION;
+        }
+
+        entry->combinator = LXB_CSS_SELECTOR_COMBINATOR_CLOSE;
+        entry->selector = list->last;
+
+        *tail = entry;
+        tail = &entry->following;
+    }
+
+    selectors->status = LXB_STATUS_OK;
+
+    if (selectors->options & LXB_SELECTORS_OPT_MATCH_ROOT) {
+        node = root;
+
+        if (node->type == LXB_DOM_NODE_TYPE_DOCUMENT) {
+            node = root->first_child;
+        }
+    }
+    else {
+        node = root->first_child;
+    }
+
+    if (node == NULL) {
+        goto out;
+    }
+
+    do {
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            goto next;
+        }
+
+        for (entry = first; entry != NULL; entry = entry->following) {
+            if (!lxb_selectors_match(selectors, entry, entry->selector, node)) {
+                continue;
+            }
+
+            status = cb(node, entry->selector->list->specificity, ctx);
+            selectors->status = status;
+
+            if (status != LXB_STATUS_OK) {
+                if (status == LXB_STATUS_STOP) {
+                    goto out;
+                }
+
+                lxb_selectors_clean(selectors);
+
+                return status;
+            }
+
+            if (selectors->options & LXB_SELECTORS_OPT_MATCH_FIRST) {
+                break;
+            }
+        }
+
+        if (node->first_child != NULL) {
+            node = node->first_child;
+        }
+        else {
+
+        next:
+
+            while (node != root && node->next == NULL) {
+                node = node->parent;
+            }
+
+            if (node == root) {
+                break;
+            }
+
+            node = node->next;
+        }
+    }
+    while (true);
+
+out:
+
+    lxb_selectors_clean(selectors);
+
+    return LXB_STATUS_OK;
 }
 
 lxb_status_t
