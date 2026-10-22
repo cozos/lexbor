@@ -411,10 +411,14 @@ lxb_dom_element_attr_by_name(lxb_dom_element_t *element,
     lexbor_hash_t *attrs = element->node.owner_document->attrs;
     lxb_dom_attr_t *attr = element->first_attr;
 
+    if (attr == NULL) {
+        return NULL;
+    }
+
     if (element->node.ns == LXB_NS_HTML
         && element->node.owner_document->type == LXB_DOM_DOCUMENT_DTYPE_HTML)
     {
-        data = lxb_dom_attr_data_by_local_name(attrs, qualified_name, length);
+        return lxb_dom_attr_find_by_local_name(attr, qualified_name, length);
     }
     else {
         data = lxb_dom_attr_data_by_qualified_name(attrs, qualified_name,

@@ -6,6 +6,7 @@
 
 #include "lexbor/html/tokenizer/state_script.h"
 #include "lexbor/html/tokenizer/state.h"
+#include "lexbor/core/swar.h"
 
 #define LEXBOR_STR_RES_ALPHA_CHARACTER
 #define LEXBOR_STR_RES_ANSI_REPLACEMENT_CHARACTER
@@ -154,6 +155,11 @@ lxb_html_tokenizer_state_script_data(lxb_html_tokenizer_t *tkz,
     lxb_html_tokenizer_state_begin_set(tkz, data);
 
     while (data != end) {
+        data = lexbor_swar_seek3(data, end, 0x3C, 0x0D, 0x00);
+        if (data == end) {
+            break;
+        }
+
         switch (*data) {
             /* U+003C LESS-THAN SIGN (<) */
             case 0x3C:

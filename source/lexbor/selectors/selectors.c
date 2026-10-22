@@ -13,6 +13,14 @@ static lxb_status_t
 lxb_selectors_state_tree(lxb_selectors_t *selectors, lxb_dom_node_t *root,
                          const lxb_css_selector_list_t *list);
 
+static bool
+lxb_selectors_list_is_simple(const lxb_css_selector_list_t *list);
+
+static lxb_status_t
+lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
+                          const lxb_css_selector_list_t *list,
+                          lxb_selectors_cb_f cb, void *ctx);
+
 static lxb_status_t
 lxb_selectors_state_run(lxb_selectors_t *selectors, lxb_dom_node_t *node,
                         const lxb_css_selector_list_t *list);
@@ -263,6 +271,10 @@ lxb_selectors_find(lxb_selectors_t *selectors, lxb_dom_node_t *root,
     lxb_selectors_entry_t *entry;
     lxb_selectors_nested_t nested;
 
+    if (lxb_selectors_list_is_simple(list)) {
+        return lxb_selectors_find_simple(selectors, root, list, cb, ctx);
+    }
+
     entry = lexbor_dobject_calloc(selectors->objs);
     if (entry == NULL) {
         return LXB_STATUS_ERROR_MEMORY_ALLOCATION;
@@ -280,6 +292,385 @@ lxb_selectors_find(lxb_selectors_t *selectors, lxb_dom_node_t *root,
     selectors->status = LXB_STATUS_OK;
 
     return lxb_selectors_state_tree(selectors, root, list);
+}
+
+/*
+ * A selector list in which every selector is a single simple selector
+ * (type, universal, class, id or attribute), e.g. "script, style, .foo".
+ */
+static bool
+lxb_selectors_list_is_simple(const lxb_css_selector_list_t *list)
+{
+    const lxb_css_selector_t *selector;
+
+    for (; list != NULL; list = list->next) {
+        selector = list->last;
+
+        if (selector == NULL || selector->prev != NULL) {
+            return false;
+        }
+
+        switch (selector->type) {
+            case LXB_CSS_SELECTOR_TYPE_ANY:
+            case LXB_CSS_SELECTOR_TYPE_ELEMENT:
+            case LXB_CSS_SELECTOR_TYPE_ID:
+            case LXB_CSS_SELECTOR_TYPE_CLASS:
+            case LXB_CSS_SELECTOR_TYPE_ATTRIBUTE:
+                break;
+
+            default:
+                return false;
+        }
+    }
+
+    return true;
+}
+
+/*
+ * Bit i is set if the i-th entry is a class selector matching the element.
+ * Equivalent to lxb_selectors_match_class() for each class selector with a
+ * non-empty name, but the class attribute is split into tokens only once.
+ */
+static uint64_t
+lxb_selectors_class_mask(const lxb_dom_node_t *node,
+                         const lxb_selectors_entry_t *first)
+{
+    size_t idx, length;
+    uint64_t mask;
+    const lxb_char_t *data, *end, *pos;
+    const lexbor_str_t *value;
+    const lxb_selectors_entry_t *entry;
+    const lxb_dom_element_t *element;
+
+    element = lxb_dom_interface_element(node);
+
+    if (element->attr_class == NULL || element->attr_class->value == NULL) {
+        return 0;
+    }
+
+    value = element->attr_class->value;
+    data = value->data;
+    end = data + value->length;
+    mask = 0;
+
+    while (data < end) {
+        while (data < end && lexbor_utils_whitespace(*data, ==, ||)) {
+            data++;
+        }
+
+        pos = data;
+
+        while (data < end && !(lexbor_utils_whitespace(*data, ==, ||))) {
+            data++;
+        }
+
+        length = data - pos;
+
+        if (length == 0) {
+            break;
+        }
+
+        for (entry = first, idx = 0; entry != NULL;
+             entry = entry->following, idx++)
+        {
+            if (entry->selector->type == LXB_CSS_SELECTOR_TYPE_CLASS
+                && entry->selector->name.length == length
+                && lexbor_str_data_ncasecmp(pos, entry->selector->name.data,
+                                            length))
+            {
+                mask |= (uint64_t) 1 << idx;
+            }
+        }
+    }
+
+    return mask;
+}
+
+/*
+ * Bookkeeping for one selector of a simple list. A failed tag or attribute
+ * name lookup is remembered together with the size of the hash it was looked
+ * up in: names are only ever added to these hashes, so the lookup cannot
+ * succeed until the hash grows.
+ */
+typedef struct {
+    const lexbor_hash_t *miss_hash;
+    size_t              miss_size;
+}
+lxb_selectors_simple_t;
+
+#define LXB_SELECTORS_SIMPLE_MAX 64
+
+lxb_inline bool
+lxb_selectors_simple_missed(const lxb_selectors_simple_t *simple,
+                            const lexbor_hash_t *hash)
+{
+    return simple->miss_hash == hash
+        && simple->miss_size == lexbor_dobject_allocated(hash->entries);
+}
+
+lxb_inline void
+lxb_selectors_simple_miss(lxb_selectors_simple_t *simple,
+                          const lexbor_hash_t *hash)
+{
+    simple->miss_hash = hash;
+    simple->miss_size = lexbor_dobject_allocated(hash->entries);
+}
+
+/*
+ * Same as lxb_selectors_match() for a selector of a simple list.
+ */
+lxb_inline bool
+lxb_selectors_simple_match(lxb_selectors_t *selectors,
+                           lxb_selectors_entry_t *entry,
+                           lxb_selectors_simple_t *simple, lxb_dom_node_t *node)
+{
+    bool res;
+    lxb_tag_id_t tag_id;
+    const lexbor_hash_t *hash;
+    const lxb_css_selector_t *selector = entry->selector;
+
+    switch (selector->type) {
+        case LXB_CSS_SELECTOR_TYPE_ELEMENT:
+            if (entry->id == 0) {
+                hash = node->owner_document->tags;
+
+                if (lxb_selectors_simple_missed(simple, hash)) {
+                    return false;
+                }
+
+                tag_id = lxb_tag_id_by_name(node->owner_document->tags,
+                                            selector->name.data,
+                                            selector->name.length);
+                if (tag_id == LXB_TAG__UNDEF) {
+                    lxb_selectors_simple_miss(simple, hash);
+                    return false;
+                }
+
+                entry->id = tag_id;
+            }
+
+            return node->local_name == entry->id;
+
+        case LXB_CSS_SELECTOR_TYPE_ATTRIBUTE:
+            if (entry->id == 0) {
+                hash = node->owner_document->attrs;
+
+                if (lxb_selectors_simple_missed(simple, hash)) {
+                    return false;
+                }
+
+                res = lxb_selectors_match(selectors, entry, selector, node);
+
+                if (entry->id == 0) {
+                    lxb_selectors_simple_miss(simple, hash);
+                }
+
+                return res;
+            }
+
+            return lxb_selectors_match(selectors, entry, selector, node);
+
+        default:
+            return lxb_selectors_match(selectors, entry, selector, node);
+    }
+}
+
+/*
+ * Same traversal and callback order as lxb_selectors_state_tree() for a
+ * simple selector list, without the state machine: each element is matched
+ * against each selector of the list in order.
+ */
+static lxb_status_t
+lxb_selectors_find_simple(lxb_selectors_t *selectors, lxb_dom_node_t *root,
+                          const lxb_css_selector_list_t *list,
+                          lxb_selectors_cb_f cb, void *ctx)
+{
+    bool class_mask, tag_filter;
+    size_t idx, count, classes;
+    uint64_t matched;
+    lxb_status_t status;
+    lxb_tag_id_t tag_id;
+    lxb_dom_node_t *node;
+    lxb_selectors_entry_t *first, *entry, **tail;
+    lxb_selectors_simple_t simple[LXB_SELECTORS_SIMPLE_MAX];
+    uint64_t tags[(LXB_TAG__LAST_ENTRY + 63) / 64];
+
+    first = NULL;
+    tail = &first;
+    count = 0;
+    classes = 0;
+    class_mask = true;
+    tag_filter = true;
+
+    memset(tags, 0, sizeof(tags));
+
+    for (; list != NULL; list = list->next) {
+        entry = lexbor_dobject_calloc(selectors->objs);
+        if (entry == NULL) {
+            lxb_selectors_clean(selectors);
+            return LXB_STATUS_ERROR_MEMORY_ALLOCATION;
+        }
+
+        entry->combinator = LXB_CSS_SELECTOR_COMBINATOR_CLOSE;
+        entry->selector = list->last;
+
+        switch (entry->selector->type) {
+            case LXB_CSS_SELECTOR_TYPE_CLASS:
+                classes += 1;
+
+                if (entry->selector->name.length == 0) {
+                    class_mask = false;
+                }
+
+                tag_filter = false;
+                break;
+
+            case LXB_CSS_SELECTOR_TYPE_ELEMENT:
+                /*
+                 * Resolving the name here instead of on the first element
+                 * gives the same id: no callback runs in between.
+                 */
+                tag_id = lxb_tag_id_by_name(root->owner_document->tags,
+                                            entry->selector->name.data,
+                                            entry->selector->name.length);
+                if (tag_id == LXB_TAG__UNDEF
+                    || tag_id >= LXB_TAG__LAST_ENTRY)
+                {
+                    tag_filter = false;
+                }
+                else {
+                    tags[tag_id / 64] |= (uint64_t) 1 << (tag_id % 64);
+                    entry->id = tag_id;
+                }
+
+                break;
+
+            default:
+                tag_filter = false;
+                break;
+        }
+
+        count += 1;
+
+        *tail = entry;
+        tail = &entry->following;
+    }
+
+    if (count > LXB_SELECTORS_SIMPLE_MAX) {
+        class_mask = false;
+        tag_filter = false;
+    }
+    else {
+        memset(simple, 0, count * sizeof(lxb_selectors_simple_t));
+    }
+
+    /* Tokenize class attributes once when several class selectors share it. */
+    class_mask = class_mask && classes >= 2;
+    matched = 0;
+
+    selectors->status = LXB_STATUS_OK;
+
+    if (selectors->options & LXB_SELECTORS_OPT_MATCH_ROOT) {
+        node = root;
+
+        if (node->type == LXB_DOM_NODE_TYPE_DOCUMENT) {
+            node = root->first_child;
+        }
+    }
+    else {
+        node = root->first_child;
+    }
+
+    if (node == NULL) {
+        goto out;
+    }
+
+    do {
+        if (node->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            goto next;
+        }
+
+        /* Only type selectors with known ids: skip elements of other types. */
+        if (tag_filter
+            && (node->local_name >= LXB_TAG__LAST_ENTRY
+                || (tags[node->local_name / 64]
+                    & ((uint64_t) 1 << (node->local_name % 64))) == 0))
+        {
+            goto children;
+        }
+
+        if (class_mask) {
+            matched = lxb_selectors_class_mask(node, first);
+        }
+
+        for (entry = first, idx = 0; entry != NULL;
+             entry = entry->following, idx++)
+        {
+            if (class_mask
+                && entry->selector->type == LXB_CSS_SELECTOR_TYPE_CLASS)
+            {
+                if ((matched & ((uint64_t) 1 << idx)) == 0) {
+                    continue;
+                }
+            }
+            else if (count <= LXB_SELECTORS_SIMPLE_MAX) {
+                if (!lxb_selectors_simple_match(selectors, entry,
+                                                &simple[idx], node))
+                {
+                    continue;
+                }
+            }
+            else if (!lxb_selectors_match(selectors, entry,
+                                          entry->selector, node))
+            {
+                continue;
+            }
+
+            status = cb(node, entry->selector->list->specificity, ctx);
+            selectors->status = status;
+
+            if (status != LXB_STATUS_OK) {
+                if (status == LXB_STATUS_STOP) {
+                    goto out;
+                }
+
+                lxb_selectors_clean(selectors);
+
+                return status;
+            }
+
+            if (selectors->options & LXB_SELECTORS_OPT_MATCH_FIRST) {
+                break;
+            }
+        }
+
+    children:
+
+        if (node->first_child != NULL) {
+            node = node->first_child;
+        }
+        else {
+
+        next:
+
+            while (node != root && node->next == NULL) {
+                node = node->parent;
+            }
+
+            if (node == root) {
+                break;
+            }
+
+            node = node->next;
+        }
+    }
+    while (true);
+
+out:
+
+    lxb_selectors_clean(selectors);
+
+    return LXB_STATUS_OK;
 }
 
 lxb_status_t
