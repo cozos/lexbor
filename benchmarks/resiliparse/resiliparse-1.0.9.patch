@@ -1,0 +1,40 @@
+--- a/resiliparse_inc/lexbor.pxd	2026-07-20 09:29:50.000000000 +0000
++++ b/resiliparse_inc/lexbor.pxd	2026-10-22 07:56:24.388213065 +0000
+@@ -400,6 +400,10 @@
+     lxb_dom_collection_t * lxb_dom_collection_destroy(lxb_dom_collection_t *col, bint self_destroy)
+ 
+ 
++cdef extern from "<lexbor/selectors/selectors.h>" nogil:
++    pass
++
++
+ cdef extern from "<lexbor/css/css.h>" nogil:
+     ctypedef struct lxb_css_memory_t
+     ctypedef struct lxb_css_selectors_t
+--- a/resiliparse/parse/html.pyx	2026-07-20 09:29:50.000000000 +0000
++++ b/resiliparse/parse/html.pyx	2026-10-22 07:56:24.423474247 +0000
+@@ -1671,6 +1671,16 @@
+         return self.__repr__()
+ 
+ 
++cdef extern from * nogil:
++    """
++    static inline void resiliparse_doc_wo_events(lxb_html_document_t *doc) {
++        lxb_dom_document_opt_set(lxb_dom_interface_document(doc),
++                                 LXB_DOM_DOCUMENT_OPT_WO_EVENTS);
++    }
++    """
++    void resiliparse_doc_wo_events(lxb_html_document_t *doc)
++
++
+ cdef HTMLTree create_html_tree(bytes document, bint reencode=True, str encoding='utf-8', str errors='ignore'):
+     """
+     Create :class:`HTMLTree` instance from bytes content.
+@@ -1709,6 +1719,7 @@
+         self.dom_document = lxb_html_document_create()
+         if not self.dom_document:
+             raise RuntimeError('Failed to allocate HTML document')
++        resiliparse_doc_wo_events(self.dom_document)
+         self.css_parser = NULL
+         self.css_memory = NULL
+ 
